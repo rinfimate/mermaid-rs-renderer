@@ -50,7 +50,6 @@ use crate::text_metrics;
 use crate::theme::{Theme, adjust_color, parse_color_to_hsl};
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::time::Instant;
 
 // Label placement padding (resolved per diagram kind).
 // Minimum padding around the entire layout bounding box.
@@ -203,14 +202,14 @@ pub fn compute_layout_with_metrics(
     apply_preferred_aspect_ratio_layout(&mut layout, config);
 
     // Final pass: resolve all edge label positions using collision avoidance.
-    let label_start = Instant::now();
+    #[cfg(not(target_arch = "wasm32"))] let label_start = std::time::Instant::now();
     label_placement::resolve_all_label_positions(&mut layout, theme, config);
     if matches!(layout.diagram, DiagramData::Sequence(_)) {
         sequence::finalize_sequence_layout_bounds(&mut layout);
     }
     stage_metrics.label_placement_us = stage_metrics
         .label_placement_us
-        .saturating_add(label_start.elapsed().as_micros());
+        .saturating_add({ #[cfg(not(target_arch = "wasm32"))] { label_start.elapsed().as_micros() } #[cfg(target_arch = "wasm32")] { 0u128 } });
 
     (layout, stage_metrics)
 }
