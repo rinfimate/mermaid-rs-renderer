@@ -975,19 +975,21 @@ pub fn render_svg(layout: &Layout, theme: &Theme, config: &LayoutConfig) -> Stri
                 // and the arrowhead meet cleanly with no stub gap.
                 let mut pts = edge.points.clone();
                 if edge.arrow_end {
-                    if let (Some(last), Some(node)) =
-                        (pts.last_mut(), layout.nodes.get(&edge.to))
-                    {
+                    if let Some(node) = layout.nodes.get(&edge.to) {
                         let angle = edge_endpoint_angle(&edge.points, false);
-                        *last = flowchart_entry_boundary(angle, node);
+                        if let Some(last) = pts.last_mut() {
+                            let stub_pt = *last;
+                            *last = flowchart_entry_boundary(stub_pt, angle, node);
+                        }
                     }
                 }
                 if edge.arrow_start {
-                    if let (Some(first), Some(node)) =
-                        (pts.first_mut(), layout.nodes.get(&edge.from))
-                    {
+                    if let Some(node) = layout.nodes.get(&edge.from) {
                         let angle = edge_endpoint_angle(&edge.points, true);
-                        *first = flowchart_entry_boundary(angle + 180.0, node);
+                        if let Some(first) = pts.first_mut() {
+                            let stub_pt = *first;
+                            *first = flowchart_entry_boundary(stub_pt, angle + 180.0, node);
+                        }
                     }
                 }
                 points_to_smooth_path(&pts, 12.0)
@@ -1058,23 +1060,23 @@ pub fn render_svg(layout: &Layout, theme: &Theme, config: &LayoutConfig) -> Stri
             ));
 
             if overlay_flowchart {
-                if edge.arrow_start
-                    && edge.points.first().is_some()
-                {
-                    let angle = edge_endpoint_angle(&edge.points, true);
-                    let point = layout.nodes.get(&edge.from)
-                        .map(|node| flowchart_entry_boundary(angle + 180.0, node))
-                        .unwrap_or_else(|| edge.points.first().copied().unwrap());
-                    overlay_arrows.push((true, point, angle, stroke.clone(), stroke_width));
+                if let Some(stub_pt) = edge.points.first().copied() {
+                    if edge.arrow_start {
+                        let angle = edge_endpoint_angle(&edge.points, true);
+                        let point = layout.nodes.get(&edge.from)
+                            .map(|node| flowchart_entry_boundary(stub_pt, angle + 180.0, node))
+                            .unwrap_or(stub_pt);
+                        overlay_arrows.push((true, point, angle, stroke.clone(), stroke_width));
+                    }
                 }
-                if edge.arrow_end
-                    && edge.points.last().is_some()
-                {
-                    let angle = edge_endpoint_angle(&edge.points, false);
-                    let point = layout.nodes.get(&edge.to)
-                        .map(|node| flowchart_entry_boundary(angle, node))
-                        .unwrap_or_else(|| edge.points.last().copied().unwrap());
-                    overlay_arrows.push((false, point, angle, stroke.clone(), stroke_width));
+                if let Some(stub_pt) = edge.points.last().copied() {
+                    if edge.arrow_end {
+                        let angle = edge_endpoint_angle(&edge.points, false);
+                        let point = layout.nodes.get(&edge.to)
+                            .map(|node| flowchart_entry_boundary(stub_pt, angle, node))
+                            .unwrap_or(stub_pt);
+                        overlay_arrows.push((false, point, angle, stroke.clone(), stroke_width));
+                    }
                 }
             }
 
@@ -5672,21 +5674,24 @@ fn edge_decoration_svg(
     format!("<g transform=\"translate({x:.2} {y:.2}) rotate({angle:.2})\">{shape}</g>")
 }
 
-// Returns the node boundary contact point for an arrow entering at `angle_deg`.
-// Uses the bounding box midpoint of the entered face, which is exact for
-// rectangles and diamonds and a close approximation for all other shapes.
-fn flowchart_entry_boundary(angle_deg: f32, node: &crate::layout::NodeLayout) -> (f32, f32) {
-    let cx = node.x + node.width / 2.0;
-    let cy = node.y + node.height / 2.0;
+// Returns the node boundary contact point for a stub ending at `stub_pt`
+// entering the node at `angle_deg`. Preserves the stub's perpendicular
+// coordinate and snaps the parallel one to the node face — so a vertical
+// path stays vertical and a horizontal path stays horizontal.
+fn flowchart_entry_boundary(
+    stub_pt: (f32, f32),
+    angle_deg: f32,
+    node: &crate::layout::NodeLayout,
+) -> (f32, f32) {
     let a = ((angle_deg % 360.0) + 360.0) % 360.0;
     if a < 45.0 || a >= 315.0 {
-        (node.x, cy)                       // entering from left
+        (node.x, stub_pt.1)                        // entering from left
     } else if a < 135.0 {
-        (cx, node.y)                       // entering from top
+        (stub_pt.0, node.y)                        // entering from top
     } else if a < 225.0 {
-        (node.x + node.width, cy)          // entering from right
+        (node.x + node.width, stub_pt.1)           // entering from right
     } else {
-        (cx, node.y + node.height)         // entering from bottom
+        (stub_pt.0, node.y + node.height)          // entering from bottom
     }
 }
 
