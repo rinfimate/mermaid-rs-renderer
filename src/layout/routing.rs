@@ -239,10 +239,18 @@ pub(super) fn edge_sides_balanced(
             } else {
                 (EdgeSide::Top, EdgeSide::Top, primary.2)
             }
-        } else if (to.x + to.width / 2.0) >= (from.x + from.width / 2.0) {
-            (EdgeSide::Right, EdgeSide::Right, primary.2)
         } else {
-            (EdgeSide::Left, EdgeSide::Left, primary.2)
+            // For vertical layouts pick the less-loaded lateral side so the
+            // back-edge port sits at the face midpoint and routes cleanly.
+            let left_load = side_load_for_node(side_loads, from_id, EdgeSide::Left)
+                + side_load_for_node(side_loads, to_id, EdgeSide::Left);
+            let right_load = side_load_for_node(side_loads, from_id, EdgeSide::Right)
+                + side_load_for_node(side_loads, to_id, EdgeSide::Right);
+            if left_load <= right_load {
+                (EdgeSide::Left, EdgeSide::Left, primary.2)
+            } else {
+                (EdgeSide::Right, EdgeSide::Right, primary.2)
+            }
         };
     }
     let from_degree = node_degrees.get(from_id).copied().unwrap_or(0);
