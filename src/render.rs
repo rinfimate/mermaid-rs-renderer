@@ -970,7 +970,11 @@ pub fn render_svg(layout: &Layout, theme: &Theme, config: &LayoutConfig) -> Stri
             _ => 2.0,
         };
         for (edge_idx, edge) in layout.edges.iter().enumerate() {
-            let d = points_to_path(&edge.points);
+            let d = if overlay_flowchart {
+                points_to_smooth_path(&edge.points, 12.0)
+            } else {
+                points_to_path(&edge.points)
+            };
             let mut stroke = theme.line_color.clone();
             let edge_id = edge_dom_id(edge_idx);
             let (mut dash, mut stroke_width) = match edge.style {
@@ -1567,6 +1571,43 @@ fn points_to_path(points: &[(f32, f32)]) -> String {
     let mut d = format!("M {:.3},{:.3}", deduped[0].0, deduped[0].1);
     for (x, y) in deduped.iter().skip(1) {
         d.push_str(&format!(" L {:.3},{:.3}", x, y));
+    }
+    d
+}
+
+// Rounds interior corners of an orthogonal path using quadratic beziers.
+// Straight paths (≤2 points) are unchanged. Improves back-edge aesthetics.
+fn points_to_smooth_path(points: &[(f32, f32)], radius: f32) -> String {
+    let deduped = dedupe_points(points);
+    let n = deduped.len();
+    if n <= 2 {
+        return points_to_path(&deduped);
+    }
+    let mut d = format!("M {:.3},{:.3}", deduped[0].0, deduped[0].1);
+    for i in 1..n {
+        let (x, y) = deduped[i];
+        if i == n - 1 {
+            d.push_str(&format!(" L {:.3},{:.3}", x, y));
+        } else {
+            let (px, py) = deduped[i - 1];
+            let (nx, ny) = deduped[i + 1];
+            let len_in  = ((x - px).powi(2) + (y - py).powi(2)).sqrt();
+            let len_out = ((nx - x).powi(2) + (ny - y).powi(2)).sqrt();
+            let r = radius.min(len_in * 0.4).min(len_out * 0.4);
+            if r < 1.0 {
+                d.push_str(&format!(" L {:.3},{:.3}", x, y));
+                continue;
+            }
+            // Point before corner
+            let t_in = r / len_in;
+            let bx = x - (x - px) * t_in;
+            let by = y - (y - py) * t_in;
+            // Point after corner
+            let t_out = r / len_out;
+            let cx = x + (nx - x) * t_out;
+            let cy = y + (ny - y) * t_out;
+            d.push_str(&format!(" L {:.3},{:.3} Q {:.3},{:.3} {:.3},{:.3}", bx, by, x, y, cx, cy));
+        }
     }
     d
 }
