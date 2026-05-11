@@ -978,8 +978,9 @@ pub fn render_svg(layout: &Layout, theme: &Theme, config: &LayoutConfig) -> Stri
                     if let Some(node) = layout.nodes.get(&edge.to) {
                         let angle = edge_endpoint_angle(&edge.points, false);
                         if let Some(last) = pts.last_mut() {
-                            let stub_pt = *last;
-                            *last = flowchart_entry_boundary(stub_pt, angle, node);
+                            if let Some(boundary) = flowchart_entry_boundary(*last, angle, node) {
+                                *last = boundary;
+                            }
                         }
                     }
                 }
@@ -987,8 +988,9 @@ pub fn render_svg(layout: &Layout, theme: &Theme, config: &LayoutConfig) -> Stri
                     if let Some(node) = layout.nodes.get(&edge.from) {
                         let angle = edge_endpoint_angle(&edge.points, true);
                         if let Some(first) = pts.first_mut() {
-                            let stub_pt = *first;
-                            *first = flowchart_entry_boundary(stub_pt, angle + 180.0, node);
+                            if let Some(boundary) = flowchart_entry_boundary(*first, angle + 180.0, node) {
+                                *first = boundary;
+                            }
                         }
                     }
                 }
@@ -1064,7 +1066,7 @@ pub fn render_svg(layout: &Layout, theme: &Theme, config: &LayoutConfig) -> Stri
                     if edge.arrow_start {
                         let angle = edge_endpoint_angle(&edge.points, true);
                         let point = layout.nodes.get(&edge.from)
-                            .map(|node| flowchart_entry_boundary(stub_pt, angle + 180.0, node))
+                            .and_then(|node| flowchart_entry_boundary(stub_pt, angle + 180.0, node))
                             .unwrap_or(stub_pt);
                         overlay_arrows.push((true, point, angle, stroke.clone(), stroke_width));
                     }
@@ -1073,7 +1075,7 @@ pub fn render_svg(layout: &Layout, theme: &Theme, config: &LayoutConfig) -> Stri
                     if edge.arrow_end {
                         let angle = edge_endpoint_angle(&edge.points, false);
                         let point = layout.nodes.get(&edge.to)
-                            .map(|node| flowchart_entry_boundary(stub_pt, angle, node))
+                            .and_then(|node| flowchart_entry_boundary(stub_pt, angle, node))
                             .unwrap_or(stub_pt);
                         overlay_arrows.push((false, point, angle, stroke.clone(), stroke_width));
                     }
@@ -5674,25 +5676,58 @@ fn edge_decoration_svg(
     format!("<g transform=\"translate({x:.2} {y:.2}) rotate({angle:.2})\">{shape}</g>")
 }
 
-// Returns the node boundary contact point for a stub ending at `stub_pt`
-// entering the node at `angle_deg`. Preserves the stub's perpendicular
-// coordinate and snaps the parallel one to the node face — so a vertical
-// path stays vertical and a horizontal path stays horizontal.
+// For a diamond node, compute the x of the left or right boundary at the
+// given y. For rectangles the boundary is always node.x / node.x+node.width.
+fn diamond_boundary_x(node: &crate::layout::NodeLayout, y: f32, left: bool) -> f32 {
+    if !matches!(node.shape, crate::ir::NodeShape::Diamond) {
+        return if left { node.x } else { node.x + node.width };
+    }
+    let cx = node.x + node.width / 2.0;
+    let cy = node.y + node.height / 2.0;
+    if (y - cy).abs() < 1e-3 {
+        return if left { node.x } else { node.x + node.width };
+    }
+    if left {
+        if y < cy {
+            // upper-left edge: (cx, node.y) → (node.x, cy)
+            let t = (y - node.y) / (cy - node.y);
+            cx + t * (node.x - cx)
+        } else {
+            // lower-left edge: (node.x, cy) → (cx, node.y+node.height)
+            let t = (y - cy) / (node.y + node.height - cy);
+            node.x + t * (cx - node.x)
+        }
+    } else {
+        if y < cy {
+            // upper-right edge: (cx, node.y) → (node.x+node.width, cy)
+            let t = (y - node.y) / (cy - node.y);
+            cx + t * (node.x + node.width - cx)
+        } else {
+            // lower-right edge: (node.x+node.width, cy) → (cx, node.y+node.height)
+            let t = (y - cy) / (node.y + node.height - cy);
+            node.x + node.width + t * (cx - (node.x + node.width))
+        }
+    }
+}
+
+// Snaps the arrowhead/path endpoint to the CENTER of the node face being entered.
 fn flowchart_entry_boundary(
-    stub_pt: (f32, f32),
+    _stub_pt: (f32, f32),
     angle_deg: f32,
     node: &crate::layout::NodeLayout,
-) -> (f32, f32) {
+) -> Option<(f32, f32)> {
+    let cx = node.x + node.width / 2.0;
+    let cy = node.y + node.height / 2.0;
     let a = ((angle_deg % 360.0) + 360.0) % 360.0;
-    if a < 45.0 || a >= 315.0 {
-        (node.x, stub_pt.1)                        // entering from left
+    Some(if a < 45.0 || a >= 315.0 {
+        (diamond_boundary_x(node, cy, true), cy)    // left face center
     } else if a < 135.0 {
-        (stub_pt.0, node.y)                        // entering from top
+        (cx, node.y)                                // top face center
     } else if a < 225.0 {
-        (node.x + node.width, stub_pt.1)           // entering from right
+        (diamond_boundary_x(node, cy, false), cy)   // right face center
     } else {
-        (stub_pt.0, node.y + node.height)          // entering from bottom
-    }
+        (cx, node.y + node.height)                  // bottom face center
+    })
 }
 
 fn arrowhead_svg(point: (f32, f32), angle_deg: f32, stroke: &str, stroke_width: f32) -> String {

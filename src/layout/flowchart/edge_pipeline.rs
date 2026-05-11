@@ -259,6 +259,10 @@ pub(in crate::layout) fn build_routed_edges(ctx: RoutedEdgeBuildContext<'_>) -> 
         let end_other = ideal_port_pos((from_anchor.0, from_anchor.1), to, end_side);
         let start_track = port_track_for_assignment(from, start_side, from_degree, start_counts);
         let end_track = port_track_for_assignment(to, end_side, to_degree, end_counts);
+        let edge_role = edge_roles.get(idx).copied().unwrap_or_default();
+        // Keep exit port distribution (source node spread looks natural).
+        // Skip entry port distribution — entry ports stay at offset=0 (face
+        // midpoint) so arrowheads always land at the center of the target face.
         port_candidates
             .entry((edge.from.clone(), start_track))
             .or_default()
@@ -267,14 +271,8 @@ pub(in crate::layout) fn build_routed_edges(ctx: RoutedEdgeBuildContext<'_>) -> 
                 is_start: true,
                 other_pos: start_other,
             });
-        port_candidates
-            .entry((edge.to.clone(), end_track))
-            .or_default()
-            .push(PortCandidate {
-                edge_idx: idx,
-                is_start: false,
-                other_pos: end_other,
-            });
+        // Back-edges also skip entry distribution (already handled above).
+        let _ = (end_other, end_track, edge_role);
     }
     let routing_cell = routing_cell_size(config);
     for ((node_id, track), candidates) in port_candidates {
