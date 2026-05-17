@@ -259,10 +259,6 @@ pub(in crate::layout) fn build_routed_edges(ctx: RoutedEdgeBuildContext<'_>) -> 
         let end_other = ideal_port_pos((from_anchor.0, from_anchor.1), to, end_side);
         let start_track = port_track_for_assignment(from, start_side, from_degree, start_counts);
         let end_track = port_track_for_assignment(to, end_side, to_degree, end_counts);
-        let edge_role = edge_roles.get(idx).copied().unwrap_or_default();
-        // Keep exit port distribution (source node spread looks natural).
-        // Skip entry port distribution — entry ports stay at offset=0 (face
-        // midpoint) so arrowheads always land at the center of the target face.
         port_candidates
             .entry((edge.from.clone(), start_track))
             .or_default()
@@ -271,8 +267,14 @@ pub(in crate::layout) fn build_routed_edges(ctx: RoutedEdgeBuildContext<'_>) -> 
                 is_start: true,
                 other_pos: start_other,
             });
-        // Back-edges also skip entry distribution (already handled above).
-        let _ = (end_other, end_track, edge_role);
+        port_candidates
+            .entry((edge.to.clone(), end_track))
+            .or_default()
+            .push(PortCandidate {
+                edge_idx: idx,
+                is_start: false,
+                other_pos: end_other,
+            });
     }
     let routing_cell = routing_cell_size(config);
     for ((node_id, track), candidates) in port_candidates {
@@ -405,6 +407,41 @@ pub(in crate::layout) fn build_routed_edges(ctx: RoutedEdgeBuildContext<'_>) -> 
             }
         }
     }
+    // Re-center all ports on each (node, face) as one combined group —
+    // inputs and outputs on the same face are shifted together so the whole
+    // distribution stays centered on the face midpoint without squishing.
+    {
+        // (node_id, face_slot) → Vec<(edge_idx, is_start)>
+        let mut face_groups: HashMap<(String, usize), Vec<(usize, bool)>> = HashMap::new();
+        for (idx, edge) in graph.edges.iter().enumerate() {
+            let (start_side, end_side) = selected_edge_sides[idx];
+            face_groups
+                .entry((edge.from.clone(), side_slot(start_side)))
+                .or_default()
+                .push((idx, true));
+            face_groups
+                .entry((edge.to.clone(), side_slot(end_side)))
+                .or_default()
+                .push((idx, false));
+        }
+        for (_key, ports) in &face_groups {
+            let offsets: Vec<f32> = ports.iter()
+                .filter_map(|&(i, is_start)| edge_ports.get(i).map(|p| {
+                    if is_start { p.start_offset } else { p.end_offset }
+                }))
+                .collect();
+            if offsets.is_empty() { continue; }
+            let mean = offsets.iter().sum::<f32>() / offsets.len() as f32;
+            if mean.abs() < 0.5 { continue; }
+            for &(i, is_start) in ports {
+                if let Some(info) = edge_ports.get_mut(i) {
+                    if is_start { info.start_offset -= mean; }
+                    else        { info.end_offset   -= mean; }
+                }
+            }
+        }
+    }
+
     if let Some(metrics) = stage_metrics.as_mut() {
         metrics.port_assignment_us = metrics
             .port_assignment_us

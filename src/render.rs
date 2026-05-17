@@ -970,16 +970,26 @@ pub fn render_svg(layout: &Layout, theme: &Theme, config: &LayoutConfig) -> Stri
             _ => 2.0,
         };
         for (edge_idx, edge) in layout.edges.iter().enumerate() {
+            // Pre-compute arrowhead size so path can be inset to the arrowhead base.
+            let arrowhead_size: f32 = match edge.style {
+                crate::ir::EdgeStyle::Thick => (3.5f32 * 2.2f32 + 6.0f32).clamp(6.0f32, 14.0f32),
+                _ => (base_edge_width * 2.2f32 + 6.0f32).clamp(6.0f32, 14.0f32),
+            };
             let d = if overlay_flowchart {
-                // Extend the path endpoints to the node boundary so the path
-                // and the arrowhead meet cleanly with no stub gap.
+                // Extend path endpoints to the node boundary, then inset by the
+                // arrowhead size so the path ends at the arrowhead BASE. The
+                // arrowhead polygon then extends from base to tip (node boundary).
                 let mut pts = edge.points.clone();
                 if edge.arrow_end {
                     if let Some(node) = layout.nodes.get(&edge.to) {
                         let angle = edge_endpoint_angle(&edge.points, false);
                         if let Some(last) = pts.last_mut() {
                             if let Some(boundary) = flowchart_entry_boundary(*last, angle, node) {
-                                *last = boundary;
+                                let r = angle.to_radians();
+                                *last = (
+                                    boundary.0 - r.cos() * arrowhead_size,
+                                    boundary.1 - r.sin() * arrowhead_size,
+                                );
                             }
                         }
                     }
@@ -989,7 +999,11 @@ pub fn render_svg(layout: &Layout, theme: &Theme, config: &LayoutConfig) -> Stri
                         let angle = edge_endpoint_angle(&edge.points, true);
                         if let Some(first) = pts.first_mut() {
                             if let Some(boundary) = flowchart_entry_boundary(*first, angle + 180.0, node) {
-                                *first = boundary;
+                                let r = angle.to_radians();
+                                *first = (
+                                    boundary.0 + r.cos() * arrowhead_size,
+                                    boundary.1 + r.sin() * arrowhead_size,
+                                );
                             }
                         }
                     }
@@ -5676,62 +5690,46 @@ fn edge_decoration_svg(
     format!("<g transform=\"translate({x:.2} {y:.2}) rotate({angle:.2})\">{shape}</g>")
 }
 
-// For a diamond node, compute the x of the left or right boundary at the
-// given y. For rectangles the boundary is always node.x / node.x+node.width.
-fn diamond_boundary_x(node: &crate::layout::NodeLayout, y: f32, left: bool) -> f32 {
-    if !matches!(node.shape, crate::ir::NodeShape::Diamond) {
-        return if left { node.x } else { node.x + node.width };
-    }
-    let cx = node.x + node.width / 2.0;
-    let cy = node.y + node.height / 2.0;
-    if (y - cy).abs() < 1e-3 {
-        return if left { node.x } else { node.x + node.width };
-    }
-    if left {
-        if y < cy {
-            // upper-left edge: (cx, node.y) → (node.x, cy)
-            let t = (y - node.y) / (cy - node.y);
-            cx + t * (node.x - cx)
-        } else {
-            // lower-left edge: (node.x, cy) → (cx, node.y+node.height)
-            let t = (y - cy) / (node.y + node.height - cy);
-            node.x + t * (cx - node.x)
-        }
-    } else {
-        if y < cy {
-            // upper-right edge: (cx, node.y) → (node.x+node.width, cy)
-            let t = (y - node.y) / (cy - node.y);
-            cx + t * (node.x + node.width - cx)
-        } else {
-            // lower-right edge: (node.x+node.width, cy) → (cx, node.y+node.height)
-            let t = (y - cy) / (node.y + node.height - cy);
-            node.x + node.width + t * (cx - (node.x + node.width))
-        }
-    }
-}
-
-// Snaps the arrowhead/path endpoint to the CENTER of the node face being entered.
+// Snaps the arrowhead/path endpoint to the exact node boundary by firing a ray
+// from the stub point toward the node center. Handles all shapes correctly:
+// circles via ellipse intersection, polygons (diamond, hexagon, etc.) via
+// polygon intersection, and rectangles/stadiums via bounding-box fallback.
 fn flowchart_entry_boundary(
-    _stub_pt: (f32, f32),
+    stub_pt: (f32, f32),
     angle_deg: f32,
     node: &crate::layout::NodeLayout,
 ) -> Option<(f32, f32)> {
+    use crate::layout::routing::{shape_polygon_points, ray_polygon_intersection, ray_ellipse_intersection};
+    // Ray from stub toward the node (reverse of arrow direction)
+    let toward_rad = (angle_deg + 180.0).to_radians();
+    let dir = (toward_rad.cos(), toward_rad.sin());
     let cx = node.x + node.width / 2.0;
     let cy = node.y + node.height / 2.0;
+
+    // Circle / DoubleCircle — ellipse intersection
+    if matches!(node.shape, crate::ir::NodeShape::Circle | crate::ir::NodeShape::DoubleCircle) {
+        if let Some(pt) = ray_ellipse_intersection(stub_pt, dir, (cx, cy), node.width / 2.0, node.height / 2.0) {
+            return Some(pt);
+        }
+    }
+
+    // All polygon shapes (Diamond, Hexagon, Parallelogram, etc.)
+    if let Some(poly) = shape_polygon_points(node) {
+        if let Some(pt) = ray_polygon_intersection(stub_pt, dir, &poly) {
+            return Some(pt);
+        }
+    }
+
+    // Bounding-box fallback (Rectangle, Stadium, etc.)
     let a = ((angle_deg % 360.0) + 360.0) % 360.0;
-    Some(if a < 45.0 || a >= 315.0 {
-        (diamond_boundary_x(node, cy, true), cy)    // left face center
-    } else if a < 135.0 {
-        (cx, node.y)                                // top face center
-    } else if a < 225.0 {
-        (diamond_boundary_x(node, cy, false), cy)   // right face center
-    } else {
-        (cx, node.y + node.height)                  // bottom face center
-    })
+    Some(if a < 45.0 || a >= 315.0 { (node.x, cy) }
+         else if a < 135.0          { (cx, node.y) }
+         else if a < 225.0          { (node.x + node.width, cy) }
+         else                        { (cx, node.y + node.height) })
 }
 
 fn arrowhead_svg(point: (f32, f32), angle_deg: f32, stroke: &str, stroke_width: f32) -> String {
-    let size = (stroke_width * 2.2 + 6.0).clamp(6.0, 14.0);
+    let size = (stroke_width * 2.2 + 6.0).clamp(6.0f32, 14.0f32);
     let half = size * 0.6;
     let (x, y) = point;
     let join = " stroke-linejoin=\"round\" stroke-linecap=\"round\"";

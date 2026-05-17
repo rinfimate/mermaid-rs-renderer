@@ -825,7 +825,7 @@ pub(super) fn port_stub_point(point: (f32, f32), side: EdgeSide, length: f32) ->
     }
 }
 
-pub(super) fn shape_polygon_points(node: &NodeLayout) -> Option<Vec<(f32, f32)>> {
+pub(crate) fn shape_polygon_points(node: &NodeLayout) -> Option<Vec<(f32, f32)>> {
     let x = node.x;
     let y = node.y;
     let w = node.width;
@@ -907,7 +907,7 @@ pub(super) fn shape_polygon_points(node: &NodeLayout) -> Option<Vec<(f32, f32)>>
     }
 }
 
-pub(super) fn ray_polygon_intersection(
+pub(crate) fn ray_polygon_intersection(
     origin: (f32, f32),
     dir: (f32, f32),
     poly: &[(f32, f32)],
@@ -943,7 +943,7 @@ pub(super) fn ray_polygon_intersection(
     best_t.map(|t| (ox + rx * t, oy + ry * t))
 }
 
-pub(super) fn ray_ellipse_intersection(
+pub(crate) fn ray_ellipse_intersection(
     origin: (f32, f32),
     dir: (f32, f32),
     center: (f32, f32),
